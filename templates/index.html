@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Monitor de Replicação PostgreSQL -  Rede Auto Shopping</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1><i class="fas fa-database"></i> Monitor de Replicação PostgreSQL -  Rede Auto Shopping</h1>
+      <div class="last-update" id="lastUpdate">Última atualização: -</div>
+    </header>
+
+    <div class="dashboard">
+      <div class="card system-info">
+        <h2><i class="fas fa-info-circle"></i> Informações do Sistema</h2>
+        <div id="systemInfo">Carregando...</div>
+      </div>
+
+      <div class="card replica-status">
+        <h2><i class="fas fa-sync"></i> Status da Réplica</h2>
+        <div id="replicaMode">Carregando...</div>
+      </div>
+
+      <div class="card replica-lag">
+        <h2><i class="fas fa-clock"></i> Lag de Replicação</h2>
+        <div id="replicaLag">Carregando...</div>
+      </div>
+
+      <div class="card replication-status">
+        <h2><i class="fas fa-network-wired"></i> Status de Replicação</h2>
+        <div id="replicationStatus">Carregando...</div>
+      </div>
+    </div>
+
+    <footer>
+      <p>Monitor PostgreSQL • Atualizado automaticamente a cada 5 segundos</p>
+    </footer>
+  </div>
+
+<script>
+function formatLSN(lsn){return lsn||'N/A'}
+function formatTimestamp(ts){return ts?new Date(ts).toLocaleString('pt-BR'):'N/A'}
+function formatDuration(seconds){
+  if(!seconds && seconds!==0) return 'N/A';
+  const h=Math.floor(seconds/3600), m=Math.floor((seconds%3600)/60), s=Math.floor(seconds%60);
+  return `${h}h ${m}m ${s}s`;
+}
+
+async function updateSystemInfo(){
+  try{
+    const res=await fetch('/api/system_info'); const data=await res.json();
+    let html=`<div class="system-grid">`;
+    const master=data.master||{};
+    const replica=data.replica||{};
+    html+=`<div class="server-info master"><h3><i class="fas fa-server"></i> Master</h3>
+      <p><strong>IP:</strong> ${master.server_ip||'N/A'}</p>
+      <p><strong>Versão:</strong> ${master.pg_version? master.pg_version.split(',')[0]:'N/A'}</p>
+      <p><strong>DB Size:</strong> ${master.db_size_pretty||'N/A'}</p>
+      <p><strong>Hora:</strong> ${formatTimestamp(master.server_time)}</p></div>`;
+    html+=`<div class="server-info replica"><h3><i class="fas fa-copy"></i> Réplica</h3>
+      <p><strong>IP:</strong> ${replica.server_ip||'N/A'}</p>
+      <p><strong>Versão:</strong> ${replica.pg_version? replica.pg_version.split(',')[0]:'N/A'}</p>
+      <p><strong>DB Size:</strong> ${replica.db_size_pretty||'N/A'}</p>
+      <p><strong>Hora:</strong> ${formatTimestamp(replica.server_time)}</p>
+      <p><strong>Modo:</strong> <span class="status-${replica.in_recovery? 'warning':'success'}">${replica.in_recovery? 'STANDBY':'PRIMARY'}</span></p></div>`;
+    html+=`</div>`;
+    document.getElementById('systemInfo').innerHTML=html;
+  }catch(e){document.getElementById('systemInfo').innerHTML=`<span class="status-error">Erro: ${e.message}</span>`}
+}
+
+async function updateReplicaMode(){
+  try{
+    const res=await fetch('/api/replica_mode'); const data=await res.json();
+    if(data.error){document.getElementById('replicaMode').innerHTML=`<span class="status-error">${data.error}</span>`;return;}
+    const isStandby = data.is_standby;
+    const modeText = isStandby ? 'STANDBY' : 'PRIMARY';
+    const modeClass = isStandby ? 'warning' : 'success';
+    let html=`<div class="replica-info">
+      <p><strong>Modo:</strong> <span class="status-${modeClass}">${modeText}</span></p>
+      <p><strong>Current LSN:</strong> ${formatLSN(data.current_lsn)}</p>
+      <p><strong>Receive LSN:</strong> ${formatLSN(data.receive_lsn)}</p>
+      <p><strong>Replay LSN:</strong> ${formatLSN(data.replay_lsn)}</p>
+      <p><strong>Última replicação:</strong> ${formatTimestamp(data.last_replay_time)}</p>
+    </div>`;
+    document.getElementById('replicaMode').innerHTML=html;
+  }catch(e){document.getElementById('replicaMode').innerHTML=`<span class="status-error">Erro: ${e.message}</span>`}
+}
+
+async function updateReplicaLag(){
+  try{
+    const res=await fetch('/api/replica_lag'); const data=await res.json();
+    if(data.error){document.getElementById('replicaLag').innerHTML=`<span class="status-error">${data.error}</span>`;return;}
+    let lagSeconds = data.replay_lag_seconds;
+    let lagFormatted = (lagSeconds!==null && lagSeconds!==undefined) ? (lagSeconds.toFixed?lagSeconds.toFixed(1):lagSeconds)+'s' : 'N/A';
+    let html=`<div class="lag-info">
+      <p><strong>Lag em tempo:</strong> ${lagFormatted}</p>`;
+    if(data.exact_byte_lag!==null && data.exact_byte_lag!==undefined){
+      html+=`<p><strong>Lag exato:</strong> ${data.exact_byte_lag} B</p>`;
+    }
+    if(data.lag_pretty){
+      html+=`<p><strong>Lag aproximado:</strong> ${data.lag_pretty}</p>`;
+    }
+    html+=`<p><strong>Última transação:</strong> ${formatTimestamp(data.last_replay_timestamp)}</p>`;
+
+    // Status logic: show PRONTO for low lag, EM RECUPERAÇÃO for high lag or unknown
+    let statusText = "PRONTO";
+    let statusClass = "success";
+    const threshold = 5.0;
+    if(data.in_recovery){
+      if(lagSeconds === null || lagSeconds === undefined){
+        statusText = "EM RECUPERAÇÃO";
+        statusClass = "warning";
+      } else if(lagSeconds > threshold){
+        statusText = "EM RECUPERAÇÃO";
+        statusClass = "warning";
+      } else {
+        statusText = "PRONTO";
+        statusClass = "success";
+      }
+    } else {
+      statusText = "PRONTO";
+      statusClass = "success";
+    }
+
+    html+=`<p><strong>Status:</strong> <span class="status-${statusClass}">${statusText}</span></p>`;
+    html+=`</div>`;
+    document.getElementById('replicaLag').innerHTML=html;
+  }catch(e){document.getElementById('replicaLag').innerHTML=`<span class="status-error">Erro: ${e.message}</span>`}
+}
+
+async function updateReplicationStatus(){
+  try{
+    const res=await fetch('/api/replication_status'); const data=await res.json();
+    if(data.error){document.getElementById('replicationStatus').innerHTML=`<span class="status-error">${data.error}</span>`;return;}
+    if(!Array.isArray(data) || data.length===0){document.getElementById('replicationStatus').innerHTML='<div class="no-replication">Nenhuma replicação ativa</div>';return;}
+    let html='<div class="replication-list">';
+    data.forEach(client=>{
+      html+=`<div class="replication-client">
+        <h4>${client.application_name||'Unknown'}</h4>
+        <p><strong>IP:</strong> ${client.client_addr||'N/A'}</p>
+        <p><strong>Estado:</strong> <span class="status-${client.state==='streaming'?'success':'warning'}">${client.state||'N/A'}</span></p>
+        <p><strong>Sync:</strong> ${client.sync_state||'N/A'}</p>
+        <p><strong>Lag:</strong> ${client.replay_lag||'N/A'}</p>
+        <p><strong>Conectado há:</strong> ${formatDuration(client.connection_duration_seconds)}</p>
+        <p><strong>Iniciado em:</strong> ${formatTimestamp(client.backend_start)}</p>
+      </div>`;
+    });
+    html+='</div>';
+    document.getElementById('replicationStatus').innerHTML=html;
+  }catch(e){document.getElementById('replicationStatus').innerHTML=`<span class="status-error">Erro: ${e.message}</span>`}
+}
+
+async function updateAll(){
+  await Promise.all([updateSystemInfo(), updateReplicaMode(), updateReplicaLag(), updateReplicationStatus()]);
+  document.getElementById('lastUpdate').textContent = `Última atualização: ${new Date().toLocaleString('pt-BR')}`;
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{ updateAll(); setInterval(updateAll, 5000); });
+</script>
+</body>
+</html>
