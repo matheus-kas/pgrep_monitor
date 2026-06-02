@@ -1,0 +1,19 @@
+# Credenciais e segredos
+.env
+
+# Inscritos (contém chat_ids de pessoas)
+subscribers.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
