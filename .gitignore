@@ -1,5 +1,10 @@
 # Credenciais e segredos
 .env
+.env.*
+.env copy
+*.env
+* copy
+!.env.example
 
 # Inscritos (contém chat_ids de pessoas)
 subscribers.json

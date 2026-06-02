@@ -3,6 +3,7 @@ from flask import Flask, jsonify, render_template, send_from_directory, request
 from threading import Lock, Thread
 import collections
 import configparser
+import os
 import psycopg2
 import psycopg2.extras
 import time
@@ -32,11 +33,14 @@ def get_conn(section):
     if section not in cfg:
         raise RuntimeError(f"Seção {section} não encontrada no config.ini")
     s = cfg[section]
+    # Senha vem do .env (MASTER_DB_PASSWORD / REPLICA_DB_PASSWORD); cai no
+    # config.ini só por compatibilidade com instalações antigas.
+    senha = os.getenv(f"{section.upper()}_DB_PASSWORD") or s.get("password")
     conn = psycopg2.connect(
         host=s.get("host"),
         port=s.get("port", 5432),
         user=s.get("user"),
-        password=s.get("password"),
+        password=senha,
         dbname=s.get("database", "postgres"),
         connect_timeout=5
     )

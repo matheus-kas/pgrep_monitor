@@ -154,7 +154,7 @@ Com `app.py` rodando, o bot fica ouvindo mensagens automaticamente.
 | `/config` | Mostra suas preferências de notificação |
 | `/alertas on\|off` | Liga/desliga alertas de mudança de estado |
 | `/lembrete on [min] \| off` | Re-lembrete enquanto continuar crítico |
-| `/relatorio off \| diario HH:MM \| intervalo Nh` | Relatório periódico (desligado, diário num horário, ou a cada N horas) |
+| `/relatorio off \| diario HH:MM [HH:MM ...] \| intervalo Nh` | Relatório periódico (desligado, diário em um ou mais horários, ou a cada N horas). Ex.: `/relatorio diario 09:00 18:00 00:00` |
 | `/silencio HH:MM HH:MM \| off` | Horário silencioso (não perturbar) |
 | `/stop` | Cancela a inscrição |
 

@@ -39,13 +39,15 @@ envia **alertas e relatórios por Telegram e e-mail**.
 - **Console Windows é cp1252**: ao testar prints com emoji, use
   `PYTHONIOENCODING=utf-8`.
 - **Segredos não versionados**: `.env` e `subscribers.json` estão no `.gitignore`.
-  ⚠️ As senhas de banco no `config.ini` ainda ficam versionadas (pendente migrar p/ `.env`).
+  As senhas de banco saíram do `config.ini` e agora vêm do `.env`
+  (`MASTER_DB_PASSWORD` / `REPLICA_DB_PASSWORD`); `get_conn` ainda aceita
+  `password` no `config.ini` como fallback de compatibilidade.
 
 ## Notificações
 
 - Auto-inscrição: a pessoa envia a senha (`TELEGRAM_SUBSCRIBE_PASSWORD`) ao bot.
 - Preferências por inscrito via comandos: `/config`, `/alertas`, `/lembrete`,
-  `/relatorio` (off | diario HH:MM | intervalo Nh), `/silencio`. Guia completo em
+  `/relatorio` (off | diario HH:MM [HH:MM ...] | intervalo Nh), `/silencio`. Guia completo em
   `TELEGRAM_SETUP.md`.
 - Estados: `OK`, `CRITICO`, `INDISPONIVEL`. Mensagens montadas em
   `_format_report` (texto p/ e-mail, HTML p/ Telegram) + `_titulo`.

@@ -212,7 +212,7 @@ Comandos do bot:
 | `/config` | Mostra/edita preferências de notificação |
 | `/alertas on\|off` | Alertas de mudança de estado |
 | `/lembrete on [min] \| off` | Re-lembrete enquanto crítico |
-| `/relatorio off \| diario HH:MM \| intervalo Nh` | Relatório periódico |
+| `/relatorio off \| diario HH:MM [HH:MM ...] \| intervalo Nh` | Relatório periódico (aceita vários horários) |
 | `/silencio HH:MM HH:MM \| off` | Horário silencioso |
 | `/stop` | Cancela a inscrição |
 
