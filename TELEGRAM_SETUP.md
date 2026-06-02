@@ -151,7 +151,16 @@ Com `app.py` rodando, o bot fica ouvindo mensagens automaticamente.
 | `/start` ou `/ajuda` | Mostra as instruções |
 | *(enviar a senha)* | Inscreve o usuário |
 | `/status` | Mostra o status atual da réplica (só para inscritos) |
+| `/config` | Mostra suas preferências de notificação |
+| `/alertas on\|off` | Liga/desliga alertas de mudança de estado |
+| `/lembrete on [min] \| off` | Re-lembrete enquanto continuar crítico |
+| `/relatorio off \| diario HH:MM \| intervalo Nh` | Relatório periódico (desligado, diário num horário, ou a cada N horas) |
+| `/silencio HH:MM HH:MM \| off` | Horário silencioso (não perturbar) |
 | `/stop` | Cancela a inscrição |
+
+> Cada inscrito controla as **próprias** preferências por esses comandos
+> (guardadas em `subscribers.json`). O horário silencioso suprime relatórios e
+> re-lembretes; alertas de mudança de estado continuam sendo enviados.
 
 > Segurança: a senha é a única barreira. Use uma senha forte, troque-a se
 > vazar (basta atualizar o `.env` e reiniciar) e remova inscritos indevidos

@@ -1,0 +1,17 @@
+# ---------- Telegram ----------
+TELEGRAM_ENABLED=true
+TELEGRAM_BOT_TOKEN=8981233408:AAExHHHv6hYxdJxbhhnXe2aBVCts2oUKM-U
+# Opcional: chat fixo (admin). Pode deixar em branco — a auto-inscrição resolve.
+TELEGRAM_CHAT_ID=
+# >>> TROQUE por uma senha forte e compartilhe SÓ com quem deve receber os status <<<
+TELEGRAM_SUBSCRIBE_PASSWORD=redeaqui-monitora-2026
+
+# ---------- E-mail (SMTP) ----------
+EMAIL_ENABLED=false
+SMTP_HOST=smtp.ialinformatica.com.br
+SMTP_PORT=587
+SMTP_USE_TLS=true
+SMTP_USER=no-reply@ialinformatica.com.br
+SMTP_PASSWORD=Pr1c&key@SMTP
+EMAIL_FROM=no-reply@ialinformatica.com.br
+EMAIL_TO=matheus@ialinformatica.com.br

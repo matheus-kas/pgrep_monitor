@@ -171,7 +171,8 @@ def notify(subject, text, html=None):
     """
     results = {}
     if TELEGRAM_ENABLED:
-        tg_text = f"<b>{subject}</b>\n{text}"
+        body = html if html else text
+        tg_text = f"<b>{subject}</b>\n{body}"
         results["telegram"] = send_telegram(tg_text)
     if EMAIL_ENABLED:
         results["email"] = send_email(subject, text, html)

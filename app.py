@@ -7,14 +7,16 @@ import psycopg2
 import psycopg2.extras
 import time
 from datetime import datetime, timezone
+from html import escape as _html_escape
 
 import notifier
+import subscribers
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 # Read config.ini from same folder
 cfg = configparser.ConfigParser()
-cfg.read("config.ini")
+cfg.read("config.ini", encoding="utf-8")
 
 # Simple in-memory cache to avoid hammering DB every 5s
 _cache = {}
@@ -320,44 +322,130 @@ def _classify(result):
         return "INDISPONIVEL", f"Falha ao consultar a réplica: {result['error']}"
 
     m = cfg["monitor"] if "monitor" in cfg else {}
-    threshold = float(m.get("lag_threshold_seconds", 30))
-    lag = result.get("replay_lag_seconds")
-    status = result.get("status")
+    # Critério principal = atraso em BYTES (WAL recebido mas ainda não aplicado).
+    # O atraso em tempo é só informativo: num master ocioso ele cresce sozinho
+    # mesmo com a réplica 100% sincronizada (0 bytes), gerando falso alarme.
+    threshold_bytes = int(m.get("lag_threshold_bytes", 16 * 1024 * 1024))  # 16 MB
+    byte_lag = result.get("exact_byte_lag")
+    time_lag = result.get("replay_lag_seconds")
 
-    if status == "EM RECUPERAÇÃO" or (lag is not None and lag > threshold):
-        lag_txt = f"{lag:.1f}s" if lag is not None else "desconhecido"
-        return "CRITICO", f"Lag de replicação alto: {lag_txt} (status={status})."
-    return "OK", f"Réplica sincronizada (lag={result.get('replay_lag_seconds_rounded')}s, status={status})."
+    if byte_lag is not None and byte_lag > threshold_bytes:
+        return "CRITICO", f"WAL não aplicado: {result.get('lag_pretty')} acima do limite."
+    tempo_txt = f"{round(time_lag, 1)}s" if time_lag is not None else "—"
+    return "OK", f"Sincronizada (atraso {result.get('lag_pretty') or '0 B'}, tempo {tempo_txt})."
 
 
-def _format_report(result, estado, msg):
-    """Monta texto legível com os números atuais para relatório/alerta."""
-    linhas = [
-        msg,
-        "",
-        f"Estado: {estado}",
-        f"Lag (tempo): {result.get('replay_lag_seconds_rounded')} s",
-        f"Lag (bytes): {result.get('lag_pretty')}",
-        f"Em recuperação: {result.get('in_recovery')}",
-        f"Último replay: {result.get('last_replay_timestamp')}",
-        f"Horário (UTC): {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}",
-    ]
-    return "\n".join(str(l) for l in linhas)
+_ESTADO_INFO = {
+    "OK": ("✅", "Réplica sincronizada com o master."),
+    "CRITICO": ("🚨", "Atenção: a réplica está atrasada."),
+    "INDISPONIVEL": ("⚠️", "Não foi possível consultar a réplica."),
+}
+
+
+def _titulo(estado):
+    emoji, _ = _ESTADO_INFO.get(estado, ("ℹ️", ""))
+    return f"{emoji} Réplica PostgreSQL — {estado}"
+
+
+def _fmt_dt(value):
+    """Formata um timestamp (ISO ou datetime) em horário local: dd/mm/aaaa HH:MM:SS."""
+    if not value:
+        return "—"
+    try:
+        dt = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        return dt.astimezone().strftime("%d/%m/%Y %H:%M:%S")
+    except Exception:
+        return str(value)
+
+
+def _format_report(result, estado, msg, html=False):
+    """Monta a mensagem de status (sem o título — o título vai no assunto).
+
+    html=True usa <b> e escapa valores (para o Telegram); caso contrário gera
+    texto puro (para e-mail).
+    """
+    _, resumo = _ESTADO_INFO.get(estado, ("", msg))
+    b = (lambda s: f"<b>{_html_escape(str(s))}</b>") if html else (lambda s: str(s))
+
+    linhas = [resumo, ""]
+    if "error" in result:
+        linhas.append(f"Erro: {b(result['error'])}")
+    else:
+        modo = "standby (réplica)" if result.get("in_recovery") else "primário"
+        linhas += [
+            f"⏱️ Atraso (tempo): {b(str(result.get('replay_lag_seconds_rounded')) + ' s')}",
+            f"💾 Atraso (dados): {b(result.get('lag_pretty') or '0 B')}",
+            f"🛰️ Modo: {b(modo)}",
+            f"🕒 Último replay: {b(_fmt_dt(result.get('last_replay_timestamp')))}",
+        ]
+    linhas.append(f"📅 Verificado: {b(_fmt_dt(datetime.now()))}")
+    return "\n".join(linhas)
+
+
+# --- Helpers de horário/preferências --------------------------------------
+
+def _parse_hhmm(s):
+    """'HH:MM' -> (h, m) válido, ou None."""
+    try:
+        h, m = str(s).strip().split(":")
+        h, m = int(h), int(m)
+        if 0 <= h < 24 and 0 <= m < 60:
+            return h, m
+    except Exception:
+        pass
+    return None
+
+
+def _parse_horas(s):
+    """'6h', '6', '1.5h' -> horas (float > 0), ou None."""
+    try:
+        v = float(str(s).lower().replace("h", "").replace(",", ".").strip())
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+def _in_quiet(agora, prefs):
+    """True se 'agora' (datetime local) está no horário silencioso do inscrito."""
+    ini = _parse_hhmm(prefs.get("quiet_start"))
+    fim = _parse_hhmm(prefs.get("quiet_end"))
+    if not ini or not fim:
+        return False
+    minutos = agora.hour * 60 + agora.minute
+    a, b = ini[0] * 60 + ini[1], fim[0] * 60 + fim[1]
+    if a == b:
+        return False
+    if a < b:
+        return a <= minutos < b
+    return minutos >= a or minutos < b  # janela que cruza a meia-noite (22:00-06:00)
+
+
+def _passou_horario_diario(agora, hhmm):
+    """True se a hora local já alcançou hhmm hoje."""
+    alvo = _parse_hhmm(hhmm)
+    if not alvo:
+        return False
+    return agora.hour * 60 + agora.minute >= alvo[0] * 60 + alvo[1]
 
 
 def monitor_loop():
-    """Verifica o lag periodicamente, dispara alertas em mudança de estado e
-    envia relatórios periódicos. Roda em uma thread daemon."""
+    """Verifica o lag periodicamente e notifica respeitando as preferências de
+    cada inscrito (alerta de mudança, re-lembrete enquanto crítico, relatório,
+    horário silencioso). E-mail segue a configuração global do config.ini.
+    Roda em uma thread daemon."""
     m = cfg["monitor"] if "monitor" in cfg else {}
     check_interval = float(m.get("check_interval_seconds", 30))
-    report_interval = float(m.get("report_interval_seconds", 3600))
+    email_report_interval = float(m.get("report_interval_seconds", 3600))
 
     if not notifier.any_channel_enabled():
         print("[monitor] nenhum canal de notificação habilitado (.env). "
               "Thread de monitoramento não enviará mensagens.")
 
     last_estado = None
-    last_report_ts = 0.0
+    last_renotify = {}     # chat_id -> ts do último lembrete
+    last_report_iv = {}    # chat_id -> ts do último relatório (modo intervalo)
+    last_report_day = {}   # chat_id -> 'YYYY-MM-DD' do último relatório (modo diário)
+    last_email_report = 0.0
 
     while True:
         try:
@@ -365,28 +453,58 @@ def monitor_loop():
             if "error" not in result:
                 _record_replica_lag_history(result)
             estado, msg = _classify(result)
-            now = time.time()
+            agora = datetime.now().astimezone()
+            now_ts = agora.timestamp()
+            mudou = last_estado is not None and estado != last_estado
 
-            # 1) Alerta em mudança de estado
-            if last_estado is not None and estado != last_estado:
-                if estado == "OK":
-                    assunto = "✅ Réplica PostgreSQL recuperada"
-                elif estado == "CRITICO":
-                    assunto = "🚨 ALERTA: lag de replicação crítico"
-                else:  # INDISPONIVEL
-                    assunto = "⚠️ Réplica PostgreSQL indisponível"
-                corpo = _format_report(result, estado, msg)
-                res = notifier.notify(assunto, corpo)
-                print(f"[monitor] mudança {last_estado} -> {estado}; notificações: {res}")
+            subject = _titulo(estado)
+            plain = _format_report(result, estado, msg)
+            html = _format_report(result, estado, msg, html=True)
 
-            # 2) Relatório periódico (independente do estado)
-            if report_interval > 0 and (now - last_report_ts) >= report_interval:
-                assunto = f"📊 Status da réplica PostgreSQL: {estado}"
-                corpo = _format_report(result, estado, msg)
-                res = notifier.notify(assunto, corpo)
-                last_report_ts = now
-                print(f"[monitor] relatório periódico enviado; notificações: {res}")
+            # ----- Telegram: por inscrito, respeitando preferências -----
+            if notifier.TELEGRAM_ENABLED:
+                for sub in subscribers.list_subscribers():
+                    cid = sub["chat_id"]
+                    p = sub["prefs"]
+                    silencio = _in_quiet(agora, p)
 
+                    # 1) alerta de mudança de estado (sempre — info importante)
+                    if mudou and p.get("alerts", True):
+                        notifier.send_telegram_to(cid, f"<b>{subject}</b>\n{html}")
+
+                    # 2) re-lembrete enquanto continuar crítico (respeita silêncio)
+                    if estado == "CRITICO" and p.get("renotify", True) and not silencio:
+                        iv = float(p.get("renotify_interval_seconds", 1800))
+                        if now_ts - last_renotify.get(cid, 0) >= iv:
+                            notifier.send_telegram_to(cid, f"<b>🔁 Continua crítico — {subject}</b>\n{html}")
+                            last_renotify[cid] = now_ts
+                    if estado != "CRITICO":
+                        last_renotify.pop(cid, None)
+
+                    # 3) relatório periódico (respeita silêncio)
+                    if not silencio:
+                        modo = p.get("report", "off")
+                        if modo == "interval":
+                            iv = float(p.get("report_interval_seconds", 3600))
+                            if now_ts - last_report_iv.get(cid, 0) >= iv:
+                                notifier.send_telegram_to(cid, f"<b>📊 {subject}</b>\n{html}")
+                                last_report_iv[cid] = now_ts
+                        elif modo == "daily":
+                            hoje = agora.date().isoformat()
+                            if last_report_day.get(cid) != hoje and _passou_horario_diario(agora, p.get("report_daily_at")):
+                                notifier.send_telegram_to(cid, f"<b>📊 {subject}</b>\n{html}")
+                                last_report_day[cid] = hoje
+
+            # ----- E-mail: configuração global -----
+            if notifier.EMAIL_ENABLED:
+                if mudou:
+                    notifier.send_email(subject, plain, html)
+                if email_report_interval > 0 and now_ts - last_email_report >= email_report_interval:
+                    notifier.send_email(f"[Relatório] {subject}", plain, html)
+                    last_email_report = now_ts
+
+            if mudou:
+                print(f"[monitor] mudança {last_estado} -> {estado}")
             last_estado = estado
         except Exception as e:
             print(f"[monitor] erro no loop de monitoramento: {e}")
@@ -395,27 +513,120 @@ def monitor_loop():
 
 
 def _bot_status_text():
-    """Texto de status atual da réplica, para responder ao comando /status."""
+    """Texto de status atual da réplica (HTML), para responder ao /status."""
     result = compute_replica_lag()
     estado, msg = _classify(result)
-    return _format_report(result, estado, msg)
+    return f"<b>{_titulo(estado)}</b>\n{_format_report(result, estado, msg, html=True)}"
+
+
+_AJUDA_CONFIG = (
+    "Comandos de preferência:\n"
+    "• <b>/config</b> — mostra suas preferências\n"
+    "• <b>/alertas</b> on|off — alerta quando muda de estado\n"
+    "• <b>/lembrete</b> on [min] | off — re-lembrete enquanto crítico\n"
+    "• <b>/relatorio</b> off | diario HH:MM | intervalo Nh\n"
+    "• <b>/silencio</b> HH:MM HH:MM | off — não perturbar\n"
+    "• <b>/status</b> — status atual  •  <b>/stop</b> — sair"
+)
+
+_MSG_BOAS_VINDAS = (
+    "👋 Bem-vindo ao monitor de réplica PostgreSQL.\n\n"
+    "Para <b>receber os status e alertas</b>, envie a senha de acesso.\n\n"
+    "Depois de inscrito, use <b>/config</b> para personalizar o que recebe."
+)
+
+
+def _format_prefs(prefs):
+    if prefs["report"] == "daily":
+        rel = f"diário às {prefs['report_daily_at']}"
+    elif prefs["report"] == "interval":
+        rel = f"a cada {round(prefs['report_interval_seconds'] / 3600, 2)} h"
+    else:
+        rel = "desligado"
+    silencio = (f"{prefs['quiet_start']}–{prefs['quiet_end']}"
+                if prefs.get("quiet_start") and prefs.get("quiet_end") else "desligado")
+    lembrete = (f"a cada {round(prefs['renotify_interval_seconds'] / 60)} min"
+                if prefs["renotify"] else "desligado")
+    return (
+        "⚙️ <b>Suas preferências</b>\n"
+        f"• Alertas de mudança: {'on' if prefs['alerts'] else 'off'}\n"
+        f"• Lembrete enquanto crítico: {lembrete}\n"
+        f"• Relatório: {rel}\n"
+        f"• Horário silencioso: {silencio}"
+    )
+
+
+def _handle_config_command(chat_id, cmd, parts):
+    """Processa comandos de preferência (exigem inscrição prévia)."""
+    args = parts[1:]
+
+    if cmd in ("/config", "/configuracao", "/preferencias"):
+        notifier.send_telegram_to(chat_id, _format_prefs(subscribers.get_prefs(chat_id)) + "\n\n" + _AJUDA_CONFIG)
+
+    elif cmd == "/alertas":
+        if args and args[0] in ("on", "off"):
+            subscribers.set_pref(chat_id, "alerts", args[0] == "on")
+            notifier.send_telegram_to(chat_id, f"✅ Alertas de mudança: {args[0]}")
+        else:
+            notifier.send_telegram_to(chat_id, "Uso: <b>/alertas on|off</b>")
+
+    elif cmd == "/lembrete":
+        if args and args[0] == "off":
+            subscribers.set_pref(chat_id, "renotify", False)
+            notifier.send_telegram_to(chat_id, "✅ Lembrete enquanto crítico: off")
+        elif args and args[0] == "on":
+            subscribers.set_pref(chat_id, "renotify", True)
+            if len(args) > 1 and args[1].isdigit() and int(args[1]) > 0:
+                subscribers.set_pref(chat_id, "renotify_interval_seconds", int(args[1]) * 60)
+                notifier.send_telegram_to(chat_id, f"✅ Lembrete: on, a cada {int(args[1])} min")
+            else:
+                notifier.send_telegram_to(chat_id, "✅ Lembrete enquanto crítico: on")
+        else:
+            notifier.send_telegram_to(chat_id, "Uso: <b>/lembrete on [minutos] | off</b>")
+
+    elif cmd in ("/relatorio", "/relatório"):
+        if args and args[0] == "off":
+            subscribers.set_pref(chat_id, "report", "off")
+            notifier.send_telegram_to(chat_id, "✅ Relatório: desligado")
+        elif args and args[0] in ("diario", "diário") and len(args) > 1 and _parse_hhmm(args[1]):
+            subscribers.set_pref(chat_id, "report", "daily")
+            subscribers.set_pref(chat_id, "report_daily_at", args[1])
+            notifier.send_telegram_to(chat_id, f"✅ Relatório diário às {args[1]}")
+        elif args and args[0] == "intervalo" and len(args) > 1 and _parse_horas(args[1]):
+            horas = _parse_horas(args[1])
+            subscribers.set_pref(chat_id, "report", "interval")
+            subscribers.set_pref(chat_id, "report_interval_seconds", int(horas * 3600))
+            notifier.send_telegram_to(chat_id, f"✅ Relatório a cada {horas} h")
+        else:
+            notifier.send_telegram_to(chat_id, "Uso: <b>/relatorio off | diario HH:MM | intervalo Nh</b>")
+
+    elif cmd in ("/silencio", "/silêncio"):
+        if args and args[0] == "off":
+            subscribers.set_pref(chat_id, "quiet_start", "")
+            subscribers.set_pref(chat_id, "quiet_end", "")
+            notifier.send_telegram_to(chat_id, "✅ Horário silencioso: desligado")
+        elif len(args) >= 2 and _parse_hhmm(args[0]) and _parse_hhmm(args[1]):
+            subscribers.set_pref(chat_id, "quiet_start", args[0])
+            subscribers.set_pref(chat_id, "quiet_end", args[1])
+            notifier.send_telegram_to(chat_id, f"✅ Horário silencioso: {args[0]}–{args[1]}")
+        else:
+            notifier.send_telegram_to(chat_id, "Uso: <b>/silencio HH:MM HH:MM | off</b>")
+
+
+_CONFIG_CMDS = ("/config", "/configuracao", "/preferencias", "/alertas",
+                "/lembrete", "/relatorio", "/relatório", "/silencio", "/silêncio")
 
 
 def _handle_telegram_message(chat_id, text, name):
-    """Trata um comando/mensagem recebido pelo bot (auto-inscrição)."""
-    low = text.lower()
+    """Trata um comando/mensagem recebido pelo bot."""
+    parts = text.split()
+    cmd = parts[0].lower() if parts else ""
 
-    if low in ("/start", "start", "/ajuda", "/help", "ajuda"):
-        notifier.send_telegram_to(chat_id, (
-            "👋 Bem-vindo ao monitor de réplica PostgreSQL.\n\n"
-            "Para <b>receber os status e alertas</b>, envie a senha de acesso.\n\n"
-            "Comandos:\n"
-            "• <b>/status</b> — status atual (após inscrito)\n"
-            "• <b>/stop</b> — cancelar inscrição"
-        ))
+    if cmd in ("/start", "start", "/ajuda", "/help", "ajuda"):
+        notifier.send_telegram_to(chat_id, _MSG_BOAS_VINDAS)
         return
 
-    if low in ("/stop", "/parar", "/sair"):
+    if cmd in ("/stop", "/parar", "/sair"):
         removido = subscribers.remove_telegram(chat_id)
         notifier.send_telegram_to(chat_id, (
             "🚫 Inscrição cancelada. Você não receberá mais notificações."
@@ -423,9 +634,16 @@ def _handle_telegram_message(chat_id, text, name):
         ))
         return
 
-    if low in ("/status", "status"):
+    if cmd in ("/status", "status"):
         if subscribers.is_subscribed(chat_id):
             notifier.send_telegram_to(chat_id, _bot_status_text())
+        else:
+            notifier.send_telegram_to(chat_id, "🔒 Envie a senha de acesso primeiro para se inscrever.")
+        return
+
+    if cmd in _CONFIG_CMDS:
+        if subscribers.is_subscribed(chat_id):
+            _handle_config_command(chat_id, cmd, parts)
         else:
             notifier.send_telegram_to(chat_id, "🔒 Envie a senha de acesso primeiro para se inscrever.")
         return
@@ -434,8 +652,9 @@ def _handle_telegram_message(chat_id, text, name):
     if notifier.TELEGRAM_SUBSCRIBE_PASSWORD and text == notifier.TELEGRAM_SUBSCRIBE_PASSWORD:
         novo = subscribers.add_telegram(chat_id, name)
         notifier.send_telegram_to(chat_id, (
-            "✅ Inscrito com sucesso! Você receberá os alertas e relatórios.\nUse /status para ver agora."
-            if novo else "Você já estava inscrito. Use /status para ver o estado atual."
+            "✅ Inscrito com sucesso! Você receberá os alertas.\n"
+            "Use <b>/config</b> para personalizar e <b>/status</b> para ver agora."
+            if novo else "Você já estava inscrito. Use /status ou /config."
         ))
     else:
         notifier.send_telegram_to(chat_id, "❌ Senha incorreta ou comando não reconhecido. Envie a senha de acesso ou /ajuda.")
@@ -473,8 +692,23 @@ def telegram_polling_loop():
             time.sleep(5)
 
 
+_MONITOR_STARTED = False
+_MONITOR_START_LOCK = Lock()
+
+
 def start_monitor():
-    """Inicia as threads de background (monitoramento + bot de inscrição)."""
+    """Inicia as threads de background (monitoramento + bot de inscrição).
+
+    Idempotente: chamadas repetidas (ex.: dev server + wsgi) não duplicam as
+    threads. Em produção, garanta um único processo/worker (ver README), pois
+    o long-polling do Telegram não admite duas instâncias simultâneas.
+    """
+    global _MONITOR_STARTED
+    with _MONITOR_START_LOCK:
+        if _MONITOR_STARTED:
+            return
+        _MONITOR_STARTED = True
+
     m = cfg["monitor"] if "monitor" in cfg else {}
     enabled = str(m.get("enabled", "true")).strip().lower() in ("1", "true", "yes", "on", "sim")
     if enabled:
