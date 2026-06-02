@@ -428,6 +428,25 @@ def _passou_horario_diario(agora, hhmm):
     return agora.hour * 60 + agora.minute >= alvo[0] * 60 + alvo[1]
 
 
+def _horarios_diarios(prefs):
+    """Lista ordenada e sem duplicatas de 'HH:MM' do relatório diário.
+
+    Aceita lista (novo formato) ou string — um horário ou vários separados por
+    vírgula/espaço — preservando compatibilidade com configurações antigas.
+    """
+    raw = prefs.get("report_daily_at", "")
+    if isinstance(raw, (list, tuple)):
+        partes = [str(x) for x in raw]
+    else:
+        partes = str(raw).replace(",", " ").split()
+    horarios = set()
+    for p in partes:
+        hhmm = _parse_hhmm(p)
+        if hhmm:
+            horarios.add(f"{hhmm[0]:02d}:{hhmm[1]:02d}")
+    return sorted(horarios)
+
+
 def monitor_loop():
     """Verifica o lag periodicamente e notifica respeitando as preferências de
     cada inscrito (alerta de mudança, re-lembrete enquanto crítico, relatório,
@@ -444,7 +463,8 @@ def monitor_loop():
     last_estado = None
     last_renotify = {}     # chat_id -> ts do último lembrete
     last_report_iv = {}    # chat_id -> ts do último relatório (modo intervalo)
-    last_report_day = {}   # chat_id -> 'YYYY-MM-DD' do último relatório (modo diário)
+    last_report_day = {}   # chat_id -> 'YYYY-MM-DD' do dia das marcações diárias
+    last_report_slots = {} # chat_id -> set de 'HH:MM' já enviados no dia (modo diário)
     last_email_report = 0.0
 
     while True:
@@ -491,9 +511,17 @@ def monitor_loop():
                                 last_report_iv[cid] = now_ts
                         elif modo == "daily":
                             hoje = agora.date().isoformat()
-                            if last_report_day.get(cid) != hoje and _passou_horario_diario(agora, p.get("report_daily_at")):
-                                notifier.send_telegram_to(cid, f"<b>📊 {subject}</b>\n{html}")
+                            if last_report_day.get(cid) != hoje:
                                 last_report_day[cid] = hoje
+                                last_report_slots[cid] = set()
+                            enviados = last_report_slots.setdefault(cid, set())
+                            pendentes = [hhmm for hhmm in _horarios_diarios(p)
+                                         if hhmm not in enviados and _passou_horario_diario(agora, hhmm)]
+                            # 1 relatório por verificação: agrupa horários atrasados
+                            # (ex.: após downtime) num único envio para não duplicar.
+                            if pendentes:
+                                notifier.send_telegram_to(cid, f"<b>📊 {subject}</b>\n{html}")
+                                enviados.update(pendentes)
 
             # ----- E-mail: configuração global -----
             if notifier.EMAIL_ENABLED:
@@ -524,7 +552,7 @@ _AJUDA_CONFIG = (
     "• <b>/config</b> — mostra suas preferências\n"
     "• <b>/alertas</b> on|off — alerta quando muda de estado\n"
     "• <b>/lembrete</b> on [min] | off — re-lembrete enquanto crítico\n"
-    "• <b>/relatorio</b> off | diario HH:MM | intervalo Nh\n"
+    "• <b>/relatorio</b> off | diario HH:MM [HH:MM ...] | intervalo Nh\n"
     "• <b>/silencio</b> HH:MM HH:MM | off — não perturbar\n"
     "• <b>/status</b> — status atual  •  <b>/stop</b> — sair"
 )
@@ -538,7 +566,8 @@ _MSG_BOAS_VINDAS = (
 
 def _format_prefs(prefs):
     if prefs["report"] == "daily":
-        rel = f"diário às {prefs['report_daily_at']}"
+        horarios = _horarios_diarios(prefs)
+        rel = f"diário às {', '.join(horarios)}" if horarios else "diário (sem horário)"
     elif prefs["report"] == "interval":
         rel = f"a cada {round(prefs['report_interval_seconds'] / 3600, 2)} h"
     else:
@@ -588,17 +617,22 @@ def _handle_config_command(chat_id, cmd, parts):
         if args and args[0] == "off":
             subscribers.set_pref(chat_id, "report", "off")
             notifier.send_telegram_to(chat_id, "✅ Relatório: desligado")
-        elif args and args[0] in ("diario", "diário") and len(args) > 1 and _parse_hhmm(args[1]):
-            subscribers.set_pref(chat_id, "report", "daily")
-            subscribers.set_pref(chat_id, "report_daily_at", args[1])
-            notifier.send_telegram_to(chat_id, f"✅ Relatório diário às {args[1]}")
+        elif args and args[0] in ("diario", "diário") and len(args) > 1:
+            horarios = sorted({f"{hm[0]:02d}:{hm[1]:02d}"
+                               for a in args[1:] if (hm := _parse_hhmm(a))})
+            if horarios:
+                subscribers.set_pref(chat_id, "report", "daily")
+                subscribers.set_pref(chat_id, "report_daily_at", horarios)
+                notifier.send_telegram_to(chat_id, f"✅ Relatório diário às {', '.join(horarios)}")
+            else:
+                notifier.send_telegram_to(chat_id, "Uso: <b>/relatorio off | diario HH:MM [HH:MM ...] | intervalo Nh</b>")
         elif args and args[0] == "intervalo" and len(args) > 1 and _parse_horas(args[1]):
             horas = _parse_horas(args[1])
             subscribers.set_pref(chat_id, "report", "interval")
             subscribers.set_pref(chat_id, "report_interval_seconds", int(horas * 3600))
             notifier.send_telegram_to(chat_id, f"✅ Relatório a cada {horas} h")
         else:
-            notifier.send_telegram_to(chat_id, "Uso: <b>/relatorio off | diario HH:MM | intervalo Nh</b>")
+            notifier.send_telegram_to(chat_id, "Uso: <b>/relatorio off | diario HH:MM [HH:MM ...] | intervalo Nh</b>")
 
     elif cmd in ("/silencio", "/silêncio"):
         if args and args[0] == "off":

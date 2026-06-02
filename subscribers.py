@@ -21,7 +21,7 @@ DEFAULT_PREFS = {
     "renotify": True,                    # re-lembrete enquanto continuar crítico
     "renotify_interval_seconds": 1800,   # 30 min entre lembretes
     "report": "off",                     # "off" | "daily" | "interval"
-    "report_daily_at": "08:00",          # usado quando report = "daily"
+    "report_daily_at": "08:00",          # report = "daily": "HH:MM" ou lista ["09:00","18:00"]
     "report_interval_seconds": 3600,     # usado quando report = "interval"
     "quiet_start": "",                   # "HH:MM" ou "" (desligado)
     "quiet_end": "",                     # "HH:MM" ou ""
