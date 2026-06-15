@@ -45,9 +45,10 @@ function initLagChart(){
   const canvas = document.getElementById('lagChart');
   if(!canvas || typeof Chart === 'undefined') return;
   const ctx = canvas.getContext('2d');
+  const accent = getComputedStyle(document.body).getPropertyValue('--accent').trim() || '#2f6f9f';
   lagChart = new Chart(ctx, {
     type: 'line',
-    data: { labels: [], datasets: [{ label: 'Lag (s)', data: [], borderColor: '#ff7b7b', backgroundColor: 'rgba(255,123,123,0.08)', tension: 0.25, spanGaps: true, pointRadius: 2 }] },
+    data: { labels: [], datasets: [{ label: 'Lag (s)', data: [], borderColor: accent, backgroundColor: 'rgba(47,111,159,0.10)', tension: 0.25, spanGaps: true, pointRadius: 2 }] },
     options: { maintainAspectRatio:false, scales: { x: { type: 'time', time: { unit: 'second', tooltipFormat: 'HH:mm:ss' }, ticks: { autoSkip: true, maxTicksLimit: 8 } }, y: { beginAtZero: true } }, plugins: { legend: { display: false } } }
   });
   loadLagHistory();

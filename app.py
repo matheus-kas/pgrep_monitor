@@ -10,10 +10,6 @@ from datetime import datetime, timezone
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
-# Read config.ini from same folder
-cfg = configparser.ConfigParser()
-cfg.read("config.ini")
-
 # Simple in-memory cache to avoid hammering DB every 5s
 _cache = {}
 CACHE_TTL = 2.0  # seconds
@@ -25,9 +21,17 @@ HISTORY_MAX_SAMPLES = 720  # keep up to ~1h @ 5s intervals (720 * 5s = 3600s)
 HISTORY_RETENTION_SECONDS = 3600  # prune samples older than 1 hour (seconds)
 
 def get_conn(section):
-    if section not in cfg:
+    # Relê o config.ini a cada conexão para refletir mudanças sem reiniciar o app.
+    # Usa um ConfigParser LOCAL (não o global) para evitar condição de corrida:
+    # o Flask atende requisições em múltiplas threads e um ConfigParser
+    # compartilhado, durante o read(), guarda valores como listas temporárias.
+    # Uma leitura concorrente retornaria uma lista em vez de string, causando
+    # erros intermitentes como "'list' object has no attribute 'find'" no psycopg2.
+    local_cfg = configparser.ConfigParser()
+    local_cfg.read("config.ini")
+    if section not in local_cfg:
         raise RuntimeError(f"Seção {section} não encontrada no config.ini")
-    s = cfg[section]
+    s = local_cfg[section]
     conn = psycopg2.connect(
         host=s.get("host"),
         port=s.get("port", 5432),
