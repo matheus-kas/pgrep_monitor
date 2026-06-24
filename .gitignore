@@ -1,0 +1,31 @@
+# Ambientes virtuais
+.venv/
+venv/
+
+# Variáveis de ambiente (senhas e tokens)
+.env
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Configuração local (pode ter senhas em texto plano)
+# Versione apenas o config.ini.example sem senhas
+# config.ini
+
+# Banco de dados SQLite local (se vier a existir)
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.code-workspace
