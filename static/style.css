@@ -207,12 +207,49 @@ header h1 i {
   color: var(--ok);
 }
 
+/* -------------------------------------------------------- Banner de alertas */
+.alert-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.alert-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: var(--r-md);
+  font-size: 0.84rem;
+  font-weight: 600;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.alert-critical {
+  background: var(--crit-soft);
+  color: var(--crit);
+  border: 1px solid var(--crit);
+  animation: pulse-alert 2.4s ease-in-out infinite;
+}
+
+.alert-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border: 1px solid var(--warn);
+}
+
 /* ------------------------------------------------------------- Dashboard */
 .dashboard {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 16px;
   margin-bottom: 20px;
+}
+
+.card.archive-cleanup {
+  grid-column: 1 / -1;
 }
 
 .card {
